@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <omp.h>
 using namespace std;
-#define Float float
+#define Float double
 
 struct V
 {
@@ -57,15 +57,15 @@ V normalize(V v) {
 
 struct Ray
 {
-    V o;
-    V d;
+    V o;// origin
+    V d;// direction (must be normalized)
 };
 
 struct Hit
 {
     Float t;//distance from origin of the ray
     V p;//position
-    V n;//normal
+    V n;//normal (must be normalized)
     unsigned long long geomID;
 };
 
@@ -80,7 +80,7 @@ struct Sphere
         const V op = p - ray.o;
         const Float b = dot(op, ray.d);
         const Float det = b * b - dot(op, op) + r*r;
-        if (det < 0) { return {}; }
+        if (det < 0) { return Hit{-1.f,{},{},0}; }
         const Float t1 = b - sqrt(det);
         if (tmin<t1&&t1<tmax) {
             return Hit{t1, {}, {}, 0}; }
@@ -95,8 +95,9 @@ struct Sphere
 struct Scene
 {
     std::vector<Sphere> spheres{
-        { V(0,0,3)       , 1, V(0.7,0,0)  },
-        /* { V(1e5+1,40.8,81.6)  , 1e5 , V(.75,.25,.25) },
+        { V(0,0,3)       , 1., V(0.7,0,0)  },
+        { V(0,1,2)       , 0.71, V(0.7,0.5,0)  },
+        /*    { V(1e5+1,40.8,81.6)  , 1e5 , V(.75,.25,.25) },
         { V(-1e5+99,40.8,81.6), 1e5 , V(.25,.25,.75) },
         { V(50,40.8,1e5)      , 1e5 , V(.75) },
         { V(50,1e5,81.6)      , 1e5 , V(.75) },
@@ -112,16 +113,17 @@ struct Scene
         {
             const Sphere& sphere=spheres.at(i);
             const Hit h = sphere.intersect(ray, tmin, tmax);
-            if (h.t<0.) { continue; }
-            minh = h;
-            tmax = minh.t;
-            minh.geomID=i;
+            if (h.t > 0.) {
+                minh = h;
+                minh.geomID = i;
+                tmax = minh.t;
+            }
         }
 
         if (minh.t>0.) {
             const Sphere& s = spheres.at(minh.geomID);
             minh.p = ray.o + ray.d * minh.t;
-            minh.n = (minh.p - s.p) / s.r;
+            minh.n = (minh.p - s.p) / s.r;//should be normalized thanks to s.r but floating point errors can occur
         }
         else
             minh.geomID = -1;
@@ -173,14 +175,16 @@ int main()
 
         Hit hit = s.intersect(ray,0.,1e+10);
         if(hit.geomID==-1)
-            ofs<<"0 0 0\n";
+            ofs<<"15 255 15\n";
         else
         {
             V c;
             c=hit.n;
+            //c=s.spheres.at(hit.geomID).R;
             ofs<<tonemap(c.x) << " " << tonemap(c.y) << " " << tonemap(c.z) << "\n";
-         }
+        }
         //ofs<<"150 0 0\n";
+
     }
     ofs.close();
 

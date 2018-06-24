@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <time.h>
 #include <omp.h>
+#include <tuple>
 
 using namespace std;
 #define Float double
@@ -64,6 +65,45 @@ V cross(V a, V b) {
 V normalize(V v) {
 	return v / sqrt(dot(v, v));
 }
+V sample_sphere(Float u, Float v)
+{
+	V r;
+	r.z = 1. - 2.* v;
+	Float sinT = sqrt(max(0., 1. - r.z*r.z));
+	Float phi = 2.*Float(M_PI)*u;
+	r.x = sinT * cos(phi);
+	r.y = sinT * sin(phi);
+	return r;
+}
+
+std::tuple<V, V> tangentSpace(const V& n) {
+	const double s = std::copysign(1, n.z);
+	const double a = -1 / (s + n.z);
+	const double b = n.x*n.y*a;
+	return {
+		V(1 + s * n.x*n.x*a,s*b,-s * n.x),
+		V(b,s + n.y*n.y*a,-n.y)
+	};
+}
+
+V sample_hemisphere(Float u, Float v, V n)
+{
+	V r = sample_sphere(u, v);
+	return normalize((dot(r, n) > 0.) ? r : -r);
+}
+
+V sample_hemisphere2(Float r1, Float r2, V n)
+{
+	const tuple<V, V>& tuple = tangentSpace(n);
+	const double r = sqrt(r1);
+	const double t = 2 * M_PI*r2;
+	const double x = r * cos(t);
+	const double y = r * sin(t);
+	const auto d = V(x, y, std::sqrt(std::max(.0, 1 - x * x - y * y)));
+	// Convert to world coordinates
+	return tuple._Myfirst._Val * d.x + tuple._Get_rest()._Myfirst._Val * d.y + n * d.z;
+
+}
 
 struct Ray
 {
@@ -90,7 +130,7 @@ struct Sphere
 		const V op = p - ray.o;
 		const Float b = dot(op, ray.d);
 		const Float det = b * b - dot(op, op) + r * r;
-		if (det < 0) { return Hit{ -1.f,{},{},0 }; }
+		if (det < 0) { return Hit{ -1.,{},{},0 }; }
 		const Float t1 = b - sqrt(det);
 		if (tmin < t1&&t1 < tmax) {
 			return Hit{ t1, {}, {}, 0 };
@@ -100,7 +140,7 @@ struct Sphere
 		if (tmin < t2&&t2 < tmax) {
 			return Hit{ t2, {}, {}, 0 };
 		}
-		return Hit{ -1.f,{},{},0 };
+		return Hit{ -1.,{},{},0 };
 	}
 };
 
@@ -146,29 +186,28 @@ struct Scene
 int main()
 {
 	//Camera
-	const V c0 = V(50, 52, 295.6);//origin of rays
-	const V poi = c0 + V(0, -0.042612, -1);//point of interest
-	const V up(0, 1, 0);//vector up for the camera
+	const V c0 = V(50, 52, 295.6);			//origin of rays
+	const V poi = c0 + V(0, -0.042612, -1);	//point of interest
+	const V up(0, 1, 0);					//vector up for the camera
 
 	const V dir = normalize(c0 - poi);
-	const V u = normalize(cross(up, dir));//for x vector
-	const V v = cross(dir, u);//dir and u are normalized so no need to normalize here
-
-	int w = 1200, h = 800, spp=8;
+	const V u = normalize(cross(up, dir));	//for x vector
+	const V v = cross(dir, u);				//dir and u are normalized so no need to normalize here
+	clock_t cbegin= clock();
+	int w = 1200, h = 800, spp = 1000;
 	Float fovx = 30.*M_PI / 180.;
 	Float dd = (Float)(tan(fovx*0.5));
 	Float ddx = (Float)(tan(fovx*0.5))*2. / w;//size of a pixel
 	Float ar = (h > w) ? (Float)w / h : (Float)h / w;
 	//other params
 
-
 	Scene s;
-
-	std::vector<V> I(w*h);
-
+	std::vector<V> I; I.resize(w*h, V(-0.1415));
+	
 #pragma omp parallel for schedule(dynamic,1)
 	for (int i = 0; i < w*h; i++)
 	{
+		I[i] = 0;//because it is initialized at -0.1415 for counting %
 		thread_local Random rng(42 + omp_get_thread_num());
 		for (int j = 0; j < spp; j++) {
 			const int x = i % w;
@@ -177,43 +216,72 @@ int main()
 			Ray ray;
 			//Perspective
 			//ray.o = V(0,0,0);
-			//ray.d = normalize(V(x*dd - dd*(Float)w/2. + dd/2., -y*dd + dd*(Float)h/2. - dd/2, 1.));//center of the pixel
+			//ray.d = normalize(V(x*dd - dd*(Float)w/2. + dd/2., -y*dd + dd*(Float)h/2. - dd/2, 1.));
+			//center of the pixel
 
 			ray.o = c0;
-			V vw = ((x+rng.next())*ddx - ddx * w*0.5 + ddx * 0.5)*u + (ddx*h*0.5 - ddx * 0.5 - ddx * (y+rng.next()))*v - ar * dir;
+			V vw = ((x + rng.next())*ddx - ddx * w*0.5 + ddx * 0.5)*u +  // u direction
+				(ddx*h*0.5 - ddx * 0.5 - ddx * (y + rng.next()))*v + // v direction
+				-ar * dir;											 // dir direction
 			ray.d = normalize(vw);
+
 			//V w( (2.*(Float)x / w - 1.)*dd*ar, dd*(1.-2.*(Float)y / h), -1.);
 			//w = normalize(w);
 			//ray.d = w.x*u + w.y*v + w.z*dir;
-
-			//Orthographique
+			//Orthographic
 			// ray.o = V( 2.*((Float)x/w)-1,2.*((Float)y/h)-1,5);
 			// ray.d = V(0,0,-1);
 
-			Hit hit = s.intersect(ray, 0., 1e+10);
-			if (hit.geomID == -1)
+			V L(0), th(1);//Luminance, throughput
+			for (int depth = 0; depth < 10; depth++)
 			{
-				I[y*w + x] = I[y*w + x]+ V(0)/spp;
-			}
-			else
-			{
+				Hit hit = s.intersect(ray, 1e-4, 1e+10);
+				if (hit.geomID == -1)
+				{//background color
+
+					I[y*w + x] = I[y*w + x] + V(0) / spp;
+					break;//will not be reflected or anything. V(0) is background color
+				}
+
+
+				if (dot(hit.n, -ray.d) < 0)
+					hit.n = -hit.n;
+				Float cosTerm = max(0., dot(hit.n, -ray.d));
+
+				Sphere& sph = s.spheres.at(hit.geomID);
 				V c;
-				//c=hit.n;
-				Float cosTerm = dot(hit.n, -ray.d);
-				c = s.spheres.at(hit.geomID).R *cosTerm;
-				I[y*w + x] = I[y*w +x] + c/spp;
+				L = L + th * sph.Le;// *cosTerm*M_1_PI;
+
+				ray.o = hit.p;
+
+				th = th * sph.R; //updating throughput
+
+				ray.d = sample_hemisphere(rng.next(), rng.next(), hit.n);
+
+				if (max({ th.x,th.y,th.z }) == 0.)
+					break; // if throughput is too low
 			}
+			I[i] = I[i] + L / spp;
+
 		}
 
+		if (rng.next() > 0.99997)
+		{
+			int count=0;
+			for (const V& v : I)
+				if (v.x == -0.1415)
+					count++;
+			cout << "completion : " << (w*h-count)*100. / (w*h) << "%\n";
+		}
 	}
-
+	std::cout << "time : " << double(clock() - cbegin) / CLOCKS_PER_SEC;
 	ofstream ofs;
-	ofs.open("image.ppm", ios_base::trunc | ios_base::binary);//delete the image at the opening
+	ofs.open("image.ppm", ios_base::trunc);//delete the image at the opening
 	ofs << "P3 " << w << " " << h << " 255\n";
 
 	for (const auto& i : I)
 	{
-		ofs << tonemap(fabs(i.x)) << " " << tonemap(fabs(i.y)) << " " << tonemap(fabs(i.z)) << "\n";
+		ofs << tonemap(abs(i.x)) << " " << tonemap(abs(i.y)) << " " << tonemap(abs(i.z)) << "\n";
 	}
 	ofs.close();
 

@@ -110,7 +110,11 @@ struct Ray
 	V o;// origin
 	V d;// direction (must be normalized)
 };
-
+enum class SurfaceType {
+	Diffuse,
+	Mirror,
+	Fresnel,
+};
 struct Hit
 {
 	Float t;//distance from origin of the ray
@@ -123,8 +127,10 @@ struct Sphere
 {
 	V p;		//position:
 	Float r;	//radius
+	SurfaceType s;
 	V R;		//reflectance
 	V Le;		//illuminance
+	Float ior = 1.5168;
 	Hit intersect(const Ray& ray, Float tmin, Float tmax) const
 	{
 		const V op = p - ray.o;
@@ -149,14 +155,16 @@ struct Scene
 	std::vector<Sphere> spheres{
 		/*  { V(0,-1,4)       , 1., V(0.7,0,0)  },
 		  { V(0,1,4)       , 0.71, V(0.7,0.5,0)  },*/
-		  { V(1e5 + 1,40.8,81.6)  , 1e5 , V(.75,.25,.25) },
-		  { V(-1e5 + 99,40.8,81.6), 1e5 , V(.25,.25,.75) },
-		  { V(50,40.8,1e5)      , 1e5 , V(.75) },
-		  { V(50,1e5,81.6)      , 1e5 , V(.75) },
-		  { V(50,-1e5 + 81.6,81.6), 1e5 , V(.75) },
-		  { V(27,16.5,47)       , 16.5, V(.999)  },
-		  { V(73,16.5,78)       , 16.5, V(.999)  },
-		  { V(50,681.6 - .27,81.6), 600 , V(), V(12) },
+		  { V(1e5 + 1,40.8,81.6)	, 1e5 ,SurfaceType::Diffuse, V(.75,.25,.25) },
+		  { V(-1e5 + 99,40.8,81.6)	, 1e5 ,SurfaceType::Diffuse, V(.25,.25,.75) },
+		  { V(50,40.8,1e5)			, 1e5 ,SurfaceType::Diffuse, V(.75) },
+		  { V(50,1e5,81.6)			, 1e5 ,SurfaceType::Diffuse, V(.75) },
+		  { V(50,-1e5 + 81.6,81.6)	, 1e5 ,SurfaceType::Diffuse, V(.75) },
+		  { V(27,16.5,47)			, 16.5,SurfaceType::Mirror,  V(.999)  },
+		  
+		  { V(73,16.5,78)			, 16.5,SurfaceType::Fresnel, V(.999)},
+		  { V(50,93,50)			    , 20.5 ,SurfaceType::Diffuse, V(.999), V(12) },
+		  //{ V(50,681.6 - .27,81.6)	, 600 ,SurfaceType::Diffuse, V(), V(12) },
 	};
 	Hit intersect(const Ray& ray, Float tmin, Float tmax) const
 	{
@@ -193,8 +201,8 @@ int main()
 	const V dir = normalize(c0 - poi);
 	const V u = normalize(cross(up, dir));	//for x vector
 	const V v = cross(dir, u);				//dir and u are normalized so no need to normalize here
-	clock_t cbegin= clock();
-	int w = 1200, h = 800, spp = 1000;
+	clock_t cbegin = clock();
+	int w = 1200, h = 800, spp = 2000;
 	Float fovx = 30.*M_PI / 180.;
 	Float dd = (Float)(tan(fovx*0.5));
 	Float ddx = (Float)(tan(fovx*0.5))*2. / w;//size of a pixel
@@ -203,7 +211,7 @@ int main()
 
 	Scene s;
 	std::vector<V> I; I.resize(w*h, V(-0.1415));
-	
+
 #pragma omp parallel for schedule(dynamic,1)
 	for (int i = 0; i < w*h; i++)
 	{
@@ -242,21 +250,49 @@ int main()
 					I[y*w + x] = I[y*w + x] + V(0) / spp;
 					break;//will not be reflected or anything. V(0) is background color
 				}
-
-
-				if (dot(hit.n, -ray.d) < 0)
-					hit.n = -hit.n;
-				Float cosTerm = max(0., dot(hit.n, -ray.d));
-
+				
 				Sphere& sph = s.spheres.at(hit.geomID);
 				V c;
 				L = L + th * sph.Le;// *cosTerm*M_1_PI;
 
 				ray.o = hit.p;
+				if (sph.s == SurfaceType::Diffuse)
+				{
+					if (dot(hit.n, -ray.d) < 0)
+						hit.n = -hit.n;
+					ray.d = sample_hemisphere(rng.next(), rng.next(), hit.n);
+				}
+				else if (sph.s == SurfaceType::Mirror)//reflect
+				{
+					if (dot(hit.n, -ray.d) < 0)
+						hit.n = -hit.n;
+					ray.d = 2.*dot(-ray.d, hit.n) * hit.n + ray.d;
+				}
+				else if (sph.s == SurfaceType::Fresnel)
+				{
+					const V wi = -ray.d;
+					const bool into = dot(wi, hit.n) > 0;
+					const V n = (into) ? hit.n : -hit.n;
+					const Float eta = (into) ? 1. / sph.ior : sph.ior;
+
+					const Float t1 = dot(wi, n);
+					const Float t2 = 1. - eta * eta*(1. - t1 * t1);
+
+					if (t2 < 0)//total internal reflection
+						ray.d = 2.*dot(wi, hit.n)*hit.n - wi;
+					else
+					{
+						const V wt = eta * (n*t1 - wi) - n * sqrt(t2);
+						const Float c = (into) ? dot(wi, hit.n) : dot(wt, hit.n);
+						const Float r = (1. - sph.ior) / (1. + sph.ior);
+						const Float Fr = r * r + (1. - r * r)*pow(1 - c, 5); // Schlick
+						// Fr term tells us if it's more likely to have refraction or reflection
+						// and we choose randomly one path or the other
+						ray.d = (rng.next() < Fr) ? 2.*dot(wi, hit.n)*hit.n - wi : wt;
+					}
+				}
 
 				th = th * sph.R; //updating throughput
-
-				ray.d = sample_hemisphere(rng.next(), rng.next(), hit.n);
 
 				if (max({ th.x,th.y,th.z }) == 0.)
 					break; // if throughput is too low
@@ -267,11 +303,11 @@ int main()
 
 		if (rng.next() > 0.99997)
 		{
-			int count=0;
+			int count = 0;
 			for (const V& v : I)
 				if (v.x == -0.1415)
 					count++;
-			cout << "completion : " << (w*h-count)*100. / (w*h) << "%\n";
+			cout << "completion : " << (w*h - count)*100. / (w*h) << "%\n";
 		}
 	}
 	std::cout << "time : " << double(clock() - cbegin) / CLOCKS_PER_SEC;

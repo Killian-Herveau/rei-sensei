@@ -261,12 +261,14 @@ int main()
 					if (dot(hit.n, -ray.d) < 0)
 						hit.n = -hit.n;
 					ray.d = sample_hemisphere(rng.next(), rng.next(), hit.n);
+          th = th * sph.R * dot(hit.n, ray.d) * 2; //updating throughput
 				}
 				else if (sph.s == SurfaceType::Mirror)//reflect
 				{
 					if (dot(hit.n, -ray.d) < 0)
 						hit.n = -hit.n;
 					ray.d = 2.*dot(-ray.d, hit.n) * hit.n + ray.d;
+          th = th * sph.R; //updating throughput
 				}
 				else if (sph.s == SurfaceType::Fresnel)
 				{
@@ -290,9 +292,8 @@ int main()
 						// and we choose randomly one path or the other
 						ray.d = (rng.next() < Fr) ? 2.*dot(wi, hit.n)*hit.n - wi : wt;
 					}
+          th = th * sph.R; //updating throughput
 				}
-
-				th = th * sph.R; //updating throughput
 
 				if (max({ th.x,th.y,th.z }) == 0.)
 					break; // if throughput is too low

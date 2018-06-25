@@ -254,9 +254,8 @@ int main()
 
 				ray.o = hit.p;
 
-				th = th * sph.R; //updating throughput
-
 				ray.d = sample_hemisphere(rng.next(), rng.next(), hit.n);
+				th = th * sph.R * dot(hit.n, ray.d) * 2; //updating throughput
 
 				if (max({ th.x,th.y,th.z }) == 0.)
 					break; // if throughput is too low
